@@ -7,7 +7,11 @@ class WorkflowDefinitionError(WorkflowError):
 
 
 class CapabilityNotFoundError(WorkflowError):
-    """Raised when a runtime does not provide a required capability."""
+    """Raised when no handler is registered for a capability."""
+
+
+class WorkflowNotFoundError(WorkflowError):
+    """Raised when a referenced sub-workflow cannot be resolved."""
 
 
 class WorkflowExecutionError(WorkflowError):
@@ -16,6 +20,7 @@ class WorkflowExecutionError(WorkflowError):
 
 class HumanInputRequired(WorkflowError):
     """Signals that execution must suspend for human input."""
+
     def __init__(self, step_id: str, prompt: str, target: str):
         super().__init__(prompt)
         self.step_id = step_id

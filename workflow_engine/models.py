@@ -17,6 +17,8 @@ class WorkflowResult:
 class WorkflowContext:
     inputs: dict[str, Any]
     state: dict[str, Any]
+    profiles: dict[str, Any] = field(default_factory=dict)
     error: Any = None
     current_step: str | None = None
     status: str = "RUNNING"
+    execution_id: str = ""

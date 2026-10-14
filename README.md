@@ -1,259 +1,273 @@
-# Framework-Independent Declarative Workflow — Three Runnable Runtimes
+# Composable Framework-Independent Declarative Workflow Engine
 
-This project demonstrates one **framework-neutral `workflow.yaml`** executed by the same generic `WorkflowEngine` with three interchangeable runtimes:
+A runnable reference implementation for composing workflows, sub-workflows, reusable property profiles, shared capabilities, and interchangeable runtime adapters.
 
-1. **MockRuntime** — fully local; no API key.
-2. **LangChainRuntime** — real LangChain model execution through `langchain-openai` and an OpenAI-compatible chat endpoint.
-3. **ClaudeRuntime** — real Claude Agent SDK execution using the Claude agent harness.
+The key architectural change is that **capabilities are no longer implemented inside each runtime**. The workflow engine invokes a generic `CapabilityExecutor`; the executor resolves a capability in a registry and invokes its handler. Runtime adapters supply model access and human-input transport, while the same capability handlers are reused across Mock, LangChain, and Claude implementations.
 
-The key architectural rule is:
+## Architecture
 
 ```text
-workflow.yaml
-     |
-     v
-WorkflowEngine          <- framework-independent
-     |
-     +------------------+------------------+
-     |                  |                  |
-     v                  v                  v
-MockRuntime       LangChainRuntime   ClaudeRuntime
-     |                  |                  |
-  local logic      LangChain model      Claude API
+Workflow YAML / Sub-workflows / Property Profiles
+                     |
+                     v
+              WorkflowEngine
+   state, routing, retries, nested workflows
+                     |
+                     v
+            CapabilityExecutor
+       input checks + registry dispatch
+                     |
+                     v
+            CapabilityRegistry
+      capability ID -> handler instance
+          /          |           \
+         v           v            v
+  Python handler  LLM handler  Tool-backed handler
+                      |               |
+                      v               v
+              Runtime.model_client  ToolManager
+                      |
+          +-----------+------------+
+          |           |            |
+          v           v            v
+        Mock      LangChain      Claude SDK
 ```
 
-Changing from LangChain to Claude does **not** require changing `workflow.yaml` or `WorkflowEngine`.
+Responsibilities:
 
-## 1. Project structure
+- `WorkflowEngine`: state, transitions, conditions, human input, state updates, nested workflows, terminal results.
+- `CapabilityRegistry`: registers capability IDs and their handlers/metadata.
+- `CapabilityExecutor`: validates required inputs, dispatches handlers, normalizes results. It has no capability-specific `if/else` chain.
+- `CapabilityHandler`: reusable implementation of a capability such as property extraction, validation, or confirmation classification.
+- `ToolManager`: registry/dispatcher for concrete tools used by capabilities (MCP, HTTP, databases, etc.).
+- `RuntimeAdapter`: supplies a `model_client` and human-input transport. It does not implement business capabilities.
+- `WorkflowRegistry`: resolves sub-workflow IDs to YAML definitions.
+- Property profile loader: resolves profile composition using `includes` or `extends`.
+
+## Project structure
 
 ```text
 framework_independent_declarative_workflow/
-├── workflow.yaml
+├── workflow.yaml                         # Basic top-level workflow
+├── workflows/
+│   ├── property_collection.yaml          # Reusable sub-workflow
+│   └── chemical_alternative_advanced.yaml # Seven-property composition
+├── profiles/property_profiles.yaml       # Reusable property groups/profiles
 ├── workflow_engine/
 │   ├── engine.py
-│   ├── runtime.py
+│   ├── bootstrap.py
+│   ├── registry.py
 │   ├── loader.py
 │   ├── expression.py
-│   ├── models.py
-│   └── errors.py
+│   ├── runtime.py
+│   └── capabilities/
+│       ├── contracts.py
+│       ├── registry.py
+│       ├── executor.py
+│       └── handlers.py
+├── tools/manager.py
 ├── runtimes/
 │   ├── mock_runtime.py
 │   ├── langchain_runtime.py
 │   ├── claude_runtime.py
 │   └── llm_utils.py
 ├── examples/
-│   ├── langchain_usage.py
-│   ├── claude_usage.py
-│   └── custom_runtime.py
 ├── tests/
-├── main.py
-├── requirements.txt
-├── requirements-langchain.txt
-├── requirements-claude.txt
-├── requirements-all.txt
-└── .env.example
+└── main.py
 ```
 
-## 2. Install
+## Install and run
 
-Create a virtual environment:
+Python 3.11 or newer is recommended.
+
+### Local mock runtime (no API key)
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
-
-For only the local runtime:
-
-```powershell
 pip install -r requirements.txt
-```
-
-For LangChain:
-
-```powershell
-pip install -r requirements-langchain.txt
-```
-
-For Claude:
-
-```powershell
-pip install -r requirements-claude.txt
-```
-
-For everything + tests:
-
-```powershell
-pip install -r requirements-all.txt
-```
-
-## 3. Run MockRuntime — no API key
-
-```powershell
 python main.py
 ```
 
-Example initial input:
+Enter values using `property_id=value` syntax. The basic workflow requires five fields:
 
 ```text
-property_a=A property_b=B property_c=C
+product_type=paint chemical_name=chemX concentration=10% application=coating temperature=80C
 ```
 
-The workflow will ask for missing properties. You can respond with:
+If a field is missing, the workflow asks for it. Confirm with `yes`, or correct a field with `temperature=120C`.
 
-```text
-property_d=D property_e=E
-```
-
-It will then show the extracted values and ask for confirmation.
-
-Confirm with:
-
-```text
-yes
-```
-
-Or test corrections:
-
-```text
-property_c=CORRECTED_VALUE
-```
-
-## 4. Run LangChainRuntime
-
-Set the API key in PowerShell:
+Run the advanced profile (seven fields):
 
 ```powershell
+python main.py --workflow advanced
+```
+
+The advanced profile also requires `pressure` and `viscosity`.
+
+### LangChain runtime
+
+```powershell
+pip install -r requirements-langchain.txt
 $env:OPENAI_API_KEY="your-key"
-```
-
-Optional model:
-
-```powershell
 $env:LANGCHAIN_MODEL="gpt-4o-mini"
-```
-
-Then:
-
-```powershell
 python examples/langchain_usage.py
 ```
 
-### OpenAI-compatible providers
+For an OpenAI-compatible endpoint, set `LANGCHAIN_BASE_URL` and the relevant API key/model environment variables.
 
-`LangChainRuntime` uses `ChatOpenAI`, so you can point it at an OpenAI-compatible endpoint without changing the workflow.
-
-For example:
+### Claude Agent SDK runtime
 
 ```powershell
-$env:OPENAI_API_KEY="your-provider-key"
-$env:LANGCHAIN_BASE_URL="https://your-provider.example/v1"
-$env:LANGCHAIN_MODEL="your-model"
-python examples/langchain_usage.py
-```
-
-This is intentionally provider configuration, not workflow configuration.
-
-## 5. Run ClaudeRuntime (Claude Agent SDK)
-
-Set:
-
-```powershell
+pip install -r requirements-claude.txt
 $env:ANTHROPIC_API_KEY="your-key"
-$env:ANTHROPIC_MODEL="claude-sonnet-5-5"
-```
-
-Then:
-
-```powershell
+$env:ANTHROPIC_MODEL="claude-sonnet-4-5"
 python examples/claude_usage.py
 ```
 
-The model is configurable because provider model names change independently of the workflow specification. The adapter uses the Claude Agent SDK `query()` interface with no built-in tools enabled; the workflow engine remains responsible for orchestration.
+The Claude adapter uses the SDK `query()` API to provide the same simple text-completion contract used by shared LLM capabilities. It does not execute workflow steps or own capability dispatch.
 
-## 6. What is actually framework-independent?
-
-The following files do **not** import LangChain or Anthropic:
-
-- `workflow.yaml`
-- `workflow_engine/engine.py`
-- `workflow_engine/runtime.py`
-- `workflow_engine/expression.py`
-- `workflow_engine/loader.py`
-- `workflow_engine/models.py`
-
-The engine understands generic workflow concepts such as:
-
-- capability
-- condition
-- state update
-- human input
-- retry
-- terminal
-
-The runtimes implement capabilities.
-
-### Adding a workflow step using an existing primitive
-
-Usually YAML only:
-
-```yaml
-- id: explain_result
-  type: capability
-  capability: result_explanation
-```
-
-### Adding a new capability
-
-Add the capability name to YAML and implement it in each runtime that should support it:
-
-```text
-workflow.yaml
-     |
-     +-- capability: chemical_alternative_search
-
-LangChainRuntime  -> LangChain implementation
-ClaudeRuntime     -> Claude implementation
-MockRuntime       -> deterministic demo implementation
-```
-
-The generic engine still does not change.
-
-### Adding a new primitive step type
-
-If you introduce a new workflow primitive such as `parallel`, then the generic engine must learn that primitive. That is an engine change, not a runtime change.
-
-## 7. Why the LLM outputs are plain JSON
-
-The example deliberately avoids provider-specific tool/function calling and provider-specific structured-output APIs. The runtime asks the model for a JSON object and parses it locally.
-
-This keeps the demonstration portable across OpenAI-compatible endpoints and Claude while still making the capability contract explicit.
-
-For production, replace this with a stronger structured-output contract appropriate to each provider and validate every response against a schema.
-
-## 8. Tests
+### Tests
 
 ```powershell
+pip install -r requirements-dev.txt
 pytest -q
 ```
 
-The test suite exercises the generic engine and mock runtime without network calls.
+The tests run without network access or provider API keys.
 
-## 9. Production evolution
+## How composition works
 
-This is a runnable reference architecture, not a production-complete orchestration platform. A production implementation should additionally address:
+### 1. Top-level workflow calls a reusable sub-workflow
 
-- durable checkpoints and resumable HITL
-- execution IDs and persistence
-- async execution
-- idempotency
-- structured logging/tracing
-- metrics
-- capability discovery and contract validation
-- authentication/secrets
-- audit/security controls
-- stronger schema validation
-- provider-specific retry and timeout policies
-- workflow schema/version migration
+The root `workflow.yaml` invokes `property-collection` and passes a profile:
 
-Those concerns can be added without coupling the canonical workflow definition to a particular agent framework.
+```yaml
+- id: collect_properties
+  type: workflow
+  workflow: property-collection
+  input:
+    user_prompt: "${input.user_prompt}"
+    property_profile: "${profiles.chemical_basic}"
+```
+
+The advanced workflow passes `${profiles.chemical_advanced}` to the exact same sub-workflow. No extraction/validation logic is duplicated.
+
+### 2. Property profiles compose smaller groups
+
+In `profiles/property_profiles.yaml`:
+
+- `chemical_basic` includes `common_product` + `chemical_core` = five properties.
+- `chemical_advanced` includes `chemical_basic` + `chemical_operating_conditions` = seven properties.
+
+`load_profiles()` resolves `includes` and `extends`, preserves declaration order, permits later definitions to override earlier property definitions by ID, and detects unknown/circular references.
+
+### 3. Add a capability without changing the executor
+
+Implement a handler with this contract:
+
+```python
+class MyCapability:
+    def execute(self, inputs, context):
+        return {"result": "..."}
+```
+
+Register it once during application setup:
+
+```python
+registry.register(
+    "my_capability",
+    MyCapability(),
+    metadata={"required_inputs": ["value"]},
+)
+```
+
+Then reference it in YAML:
+
+```yaml
+- id: do_something
+  type: capability
+  capability: my_capability
+  input:
+    value: "${input.some_value}"
+  output:
+    target: state.my_result
+  on_success:
+    next: next_step
+```
+
+The generic executor does not need to change.
+
+### 4. Use a registered tool from a capability
+
+`ToolManager` registers concrete tool integrations. A tool-backed capability can call `context.services["tool_manager"].execute(tool_id, inputs, context)`. The project includes a mock chemical database search tool to demonstrate this extension point; it deliberately returns no real chemical candidates until connected to an actual data source.
+
+### 5. Add a runtime
+
+Implement `RuntimeAdapter` with:
+
+- `runtime_name`
+- a `model_client` whose `complete(prompt)` method returns text
+- `request_human_input(prompt, context)`
+
+The shared capability handlers and YAML do not need to change. If a capability genuinely requires runtime-specific agent orchestration, implement that capability as a small adapter/handler that uses the runtime service, rather than adding branches to `CapabilityExecutor`.
+
+## Expression roots
+
+Workflow expressions support:
+
+- `${input.some_field}` — workflow input
+- `${state.some_field}` — mutable workflow state
+- `${schemas.some_schema}` — local schemas
+- `${profiles.profile_id}` — resolved profile configuration
+- `${error}` — current execution error
+
+An expression that is the entire value preserves its type (dict/list/etc.). Embedded expressions are interpolated as strings.
+
+## Important implementation notes
+
+- The included `MockRuntime` is deterministic and fully local; it understands `property_id=value` demo syntax.
+- `LangChainRuntime` and `ClaudeRuntime` require their respective optional dependencies and provider credentials.
+- The sample `chemical_search` tool is a stub, not a chemical recommendation engine.
+- The engine is synchronous for this reference implementation. The Claude adapter bridges the SDK's async query API when no event loop is already running; an application hosted inside an async event loop should introduce an async engine/adapter rather than nesting `asyncio.run()`.
+- Durable checkpoints, resumable human-in-the-loop sessions, authentication/authorization, audit logs, and production-grade retry/backoff are follow-on production concerns.
+
+## Extending the engine with new step types
+
+The core `WorkflowEngine` does not dispatch with a step-type `if/else` chain. It
+resolves each step's `type` through `StepHandlerRegistry`. Type-specific
+validation and execution live in registered handlers; workflow-wide invariants
+such as duplicate IDs and valid graph edges are checked by `WorkflowValidator`.
+
+To add a step type:
+
+1. Implement `validate(step)` and `execute(step, context)` on a handler.
+2. Return a `StepOutcome` from `execute`.
+3. Register it in `build_step_handler_registry()` (or register it in a custom
+   registry passed to `WorkflowEngine`).
+
+Example:
+
+```python
+from workflow_engine import (
+    StepOutcome, WorkflowEngine, WorkflowDefinitionError, build_step_handler_registry
+)
+
+class AuditStepHandler:
+    def validate(self, step):
+        if not step.get("next"):
+            raise WorkflowDefinitionError("audit step requires next")
+
+    def execute(self, step, context):
+        context.workflow_context.state["audit_marker"] = step.get("message", "audited")
+        return StepOutcome(next_step=step["next"])
+
+registry = build_step_handler_registry()
+registry.register("audit", AuditStepHandler())
+engine = WorkflowEngine(definition, runtime, step_handler_registry=registry)
+```
+
+Do not create a new step type for each business capability. Prefer the existing
+`type: capability` primitive with a new registered capability handler. Add a
+new step type only when it introduces a genuinely different orchestration
+primitive (for example `parallel`, `foreach`, or an explicit approval gate).

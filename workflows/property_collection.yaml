@@ -1,0 +1,250 @@
+api_version: "1.0"
+workflow:
+  id: property-collection
+  name: Reusable Property Collection
+  version: "2.0.0"
+  description: Extract, validate, collect missing information, and confirm a configurable property profile.
+  input:
+    schema:
+      type: object
+      required: [user_prompt, property_profile]
+      properties:
+        user_prompt:
+          type: string
+          min_length: 1
+        property_profile:
+          type: object
+  state:
+    extracted_properties:
+      type: object
+      default: {}
+    missing_properties:
+      type: array
+      default: []
+    validation_errors:
+      type: array
+      default: []
+    validation_status:
+      type: string
+      default: NOT_STARTED
+    failure_category:
+      type: string
+      default: null
+    human_input:
+      type: object
+      default: {response: null}
+    confirmation:
+      type: object
+      default: {decision: null, response: null, corrections: {}}
+    execution:
+      type: object
+      default: {extraction_attempts: 0, confirmation_attempts: 0, total_steps: 0}
+  capabilities:
+    allowed:
+      - property_extraction
+      - validation
+      - failure_classification
+      - confirmation_classification
+  policies:
+    execution_limits:
+      max_total_steps: 100
+      max_extraction_iterations: 10
+      max_confirmation_iterations: 10
+  steps:
+    - id: extract_required_properties
+      name: Extract Required Properties
+      iteration_group: extraction
+      type: capability
+      capability: property_extraction
+      input:
+        user_prompt: "${input.user_prompt}"
+        existing_properties: "${state.extracted_properties}"
+        property_profile: "${input.property_profile}"
+      output:
+        target: state.extracted_properties
+      on_success:
+        next: validate_required_properties
+      on_failure:
+        next: classify_failure
+
+    - id: validate_required_properties
+      name: Validate Required Properties
+      type: capability
+      capability: validation
+      input:
+        properties: "${state.extracted_properties}"
+        property_profile: "${input.property_profile}"
+      output:
+        mapping:
+          validation_status: state.validation_status
+          missing_properties: state.missing_properties
+          validation_errors: state.validation_errors
+      on_success:
+        next: route_validation_result
+      on_failure:
+        next: classify_failure
+
+    - id: route_validation_result
+      name: Route Validation Result
+      type: condition
+      conditions:
+        - id: properties_are_valid
+          when: "state.validation_status == 'VALID'"
+          next: request_user_confirmation
+        - id: properties_are_missing
+          when: "state.validation_status == 'INVALID' and length(state.missing_properties) > 0"
+          next: request_missing_information
+      otherwise:
+        next: classify_failure
+
+    - id: request_missing_information
+      name: Request Missing Information
+      type: human_input
+      prompt:
+        message: >
+          I need additional information before I can continue.
+          The following required properties are missing: ${state.missing_properties}
+          Please provide the missing information. Use property_id=value syntax where possible.
+      output:
+        target: state.human_input.response
+      on_response:
+        next: merge_human_input
+
+    - id: merge_human_input
+      name: Merge Human Input
+      type: state_update
+      operations:
+        - operation: append_to_input
+          target: input.user_prompt
+          value: "${state.human_input.response}"
+      next: extract_required_properties
+
+    - id: classify_failure
+      name: Classify Failure
+      type: capability
+      capability: failure_classification
+      input:
+        error: "${error}"
+        validation_errors: "${state.validation_errors}"
+      output:
+        target: state.failure_category
+      on_success:
+        next: route_failure
+      on_failure:
+        next: handle_system_failure
+
+    - id: route_failure
+      name: Route Failure
+      type: condition
+      conditions:
+        - id: transient_failure
+          when: "state.failure_category == 'TRANSIENT_ERROR'"
+          next: retry_failed_operation
+        - id: missing_input_failure
+          when: "state.failure_category == 'MISSING_INPUT'"
+          next: request_missing_information
+        - id: system_failure
+          when: "state.failure_category == 'SYSTEM_ERROR'"
+          next: handle_system_failure
+      otherwise:
+        next: handle_system_failure
+
+    - id: retry_failed_operation
+      name: Retry Failed Operation
+      type: retry
+      policy:
+        max_attempts: 3
+        backoff:
+          strategy: exponential
+          initial_delay_seconds: 1
+          maximum_delay_seconds: 8
+      next: extract_required_properties
+      on_exhausted:
+        next: handle_system_failure
+
+    - id: request_user_confirmation
+      name: Request User Confirmation
+      iteration_group: confirmation
+      type: human_input
+      prompt:
+        message: >
+          I have extracted the following information:
+          ${state.extracted_properties}
+          Please confirm whether all information is correct. Say yes to confirm,
+          or describe corrections using property_id=value syntax.
+      output:
+        target: state.confirmation.response
+      on_response:
+        next: classify_confirmation_response
+
+    - id: classify_confirmation_response
+      name: Classify Confirmation Response
+      type: capability
+      capability: confirmation_classification
+      input:
+        response: "${state.confirmation.response}"
+        current_properties: "${state.extracted_properties}"
+      output:
+        mapping:
+          decision: state.confirmation.decision
+          corrections: state.confirmation.corrections
+      on_success:
+        next: route_confirmation
+      on_failure:
+        next: handle_system_failure
+
+    - id: route_confirmation
+      name: Route Confirmation
+      type: condition
+      conditions:
+        - id: user_confirmed
+          when: "state.confirmation.decision == 'CONFIRMED'"
+          next: complete_workflow
+        - id: user_requested_correction
+          when: "state.confirmation.decision == 'CORRECTION_REQUIRED'"
+          next: apply_user_corrections
+        - id: user_response_unclear
+          when: "state.confirmation.decision == 'UNCLEAR'"
+          next: request_confirmation_clarification
+      otherwise:
+        next: handle_system_failure
+
+    - id: apply_user_corrections
+      name: Apply User Corrections
+      type: state_update
+      operations:
+        - operation: merge
+          target: state.extracted_properties
+          value: "${state.confirmation.corrections}"
+      next: validate_required_properties
+
+    - id: request_confirmation_clarification
+      name: Request Confirmation Clarification
+      iteration_group: confirmation
+      type: human_input
+      prompt:
+        message: >
+          I could not determine whether you want to confirm the extracted
+          information. Please confirm the information or specify fields to correct.
+      output:
+        target: state.confirmation.response
+      on_response:
+        next: classify_confirmation_response
+
+    - id: complete_workflow
+      name: Complete Workflow
+      type: terminal
+      status: COMPLETED
+      output:
+        properties: "${state.extracted_properties}"
+        confirmation_status: "${state.confirmation.decision}"
+        property_profile: "${input.property_profile.id}"
+
+    - id: handle_system_failure
+      name: Handle System Failure
+      type: terminal
+      status: FAILED
+      output:
+        error:
+          code: WORKFLOW_EXECUTION_FAILED
+          message: The request could not be processed at this time. Please try again later.

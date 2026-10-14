@@ -1,313 +1,50 @@
 api_version: "1.0"
-
 workflow:
-  id: "property-extraction-and-confirmation"
-  name: "Property Extraction and Confirmation"
-  version: "1.0.0"
-
-  description: >
-    Extract five mandatory properties from user-provided text, validate the
-    extracted properties, request missing information through human-in-the-loop
-    interaction, obtain explicit user confirmation, and complete the workflow
-    only when all required properties have been validated and confirmed.
-
+  id: chemical-alternative-basic
+  name: Chemical Alternative — Basic
+  version: "2.0.0"
+  description: Top-level workflow composed from the reusable property-collection sub-workflow.
   input:
     schema:
-      type: "object"
-      required:
-        - "user_prompt"
+      type: object
+      required: [user_prompt]
       properties:
         user_prompt:
-          type: "string"
+          type: string
           min_length: 1
-
   state:
-    extracted_properties:
-      type: "object"
+    property_collection_result:
+      type: object
       default: {}
-
-    missing_properties:
-      type: "array"
-      default: []
-
-    validation_errors:
-      type: "array"
-      default: []
-
-    validation_status:
-      type: "string"
-      default: "NOT_STARTED"
-
-    failure_category:
-      type: "string"
-      default: null
-
-    human_input:
-      type: "object"
-      default:
-        response: null
-
-    confirmation:
-      type: "object"
-      default:
-        decision: null
-        response: null
-        corrections: {}
-
     execution:
-      type: "object"
-      default:
-        extraction_attempts: 0
-        confirmation_attempts: 0
-        total_steps: 0
-
-  schemas:
-    required_properties:
-      type: "object"
-      required:
-        - "property_a"
-        - "property_b"
-        - "property_c"
-        - "property_d"
-        - "property_e"
-      properties:
-        property_a:
-          type: "string"
-        property_b:
-          type: "string"
-        property_c:
-          type: "string"
-        property_d:
-          type: "string"
-        property_e:
-          type: "string"
-
-  capabilities:
-    property_extraction:
-      type: "llm"
-    validation:
-      type: "function"
-    failure_classification:
-      type: "function"
-    confirmation_classification:
-      type: "llm_or_function"
-    human_input:
-      type: "human"
-
+      type: object
+      default: {total_steps: 0}
   policies:
-    retry:
-      default:
-        max_attempts: 3
-        backoff:
-          strategy: "exponential"
-          initial_delay_seconds: 1
-          maximum_delay_seconds: 8
-
     execution_limits:
-      max_total_steps: 50
-      max_extraction_iterations: 5
-      max_confirmation_iterations: 5
-
+      max_total_steps: 20
   steps:
-
-    - id: "extract_required_properties"
-      name: "Extract Required Properties"
-      type: "capability"
-      capability: "property_extraction"
+    - id: collect_properties
+      name: Collect and Confirm Properties
+      type: workflow
+      workflow: property-collection
       input:
         user_prompt: "${input.user_prompt}"
-        existing_properties: "${state.extracted_properties}"
+        property_profile: "${profiles.chemical_basic}"
       output:
-        target: "state.extracted_properties"
+        target: state.property_collection_result
       on_success:
-        next: "validate_required_properties"
+        next: complete_workflow
       on_failure:
-        next: "classify_failure"
-
-    - id: "validate_required_properties"
-      name: "Validate Required Properties"
-      type: "capability"
-      capability: "validation"
-      input:
-        properties: "${state.extracted_properties}"
-        schema: "${schemas.required_properties}"
+        next: handle_failure
+    - id: complete_workflow
+      name: Return Collected Properties
+      type: terminal
+      status: COMPLETED
       output:
-        mapping:
-          validation_status: "state.validation_status"
-          missing_properties: "state.missing_properties"
-          validation_errors: "state.validation_errors"
-      on_success:
-        next: "route_validation_result"
-      on_failure:
-        next: "classify_failure"
-
-    - id: "route_validation_result"
-      name: "Route Validation Result"
-      type: "condition"
-      conditions:
-        - id: "properties_are_valid"
-          when: "state.validation_status == 'VALID'"
-          next: "request_user_confirmation"
-        - id: "properties_are_missing"
-          when: >
-            state.validation_status == 'INVALID'
-            and length(state.missing_properties) > 0
-          next: "request_missing_information"
-      otherwise:
-        next: "classify_failure"
-
-    - id: "request_missing_information"
-      name: "Request Missing Information"
-      type: "human_input"
-      prompt:
-        message: >
-          I need additional information before I can continue.
-
-          The following required properties are missing:
-          ${state.missing_properties}
-
-          Please provide the missing information.
+        result: "${state.property_collection_result}"
+    - id: handle_failure
+      name: Handle Child Workflow Failure
+      type: terminal
+      status: FAILED
       output:
-        target: "state.human_input.response"
-      on_response:
-        next: "merge_human_input"
-
-    - id: "merge_human_input"
-      name: "Merge Human Input"
-      type: "state_update"
-      operations:
-        - operation: "append_to_input"
-          target: "input.user_prompt"
-          value: "${state.human_input.response}"
-      next: "extract_required_properties"
-
-    - id: "classify_failure"
-      name: "Classify Failure"
-      type: "capability"
-      capability: "failure_classification"
-      input:
         error: "${error}"
-        validation_errors: "${state.validation_errors}"
-      output:
-        target: "state.failure_category"
-      on_success:
-        next: "route_failure"
-      on_failure:
-        next: "handle_system_failure"
-
-    - id: "route_failure"
-      name: "Route Failure"
-      type: "condition"
-      conditions:
-        - id: "transient_failure"
-          when: "state.failure_category == 'TRANSIENT_ERROR'"
-          next: "retry_failed_operation"
-        - id: "missing_input_failure"
-          when: "state.failure_category == 'MISSING_INPUT'"
-          next: "request_missing_information"
-        - id: "system_failure"
-          when: "state.failure_category == 'SYSTEM_ERROR'"
-          next: "handle_system_failure"
-      otherwise:
-        next: "handle_system_failure"
-
-    - id: "retry_failed_operation"
-      name: "Retry Failed Operation"
-      type: "retry"
-      policy:
-        max_attempts: 3
-        backoff:
-          strategy: "exponential"
-          initial_delay_seconds: 1
-          maximum_delay_seconds: 8
-      next: "extract_required_properties"
-      on_exhausted:
-        next: "handle_system_failure"
-
-    - id: "request_user_confirmation"
-      name: "Request User Confirmation"
-      type: "human_input"
-      prompt:
-        message: >
-          I have extracted the following information:
-
-          ${state.extracted_properties}
-
-          Please confirm whether all of the above information is correct.
-          You can say yes/confirm if everything is correct, or describe
-          any corrections.
-      output:
-        target: "state.confirmation.response"
-      on_response:
-        next: "classify_confirmation_response"
-
-    - id: "classify_confirmation_response"
-      name: "Classify Confirmation Response"
-      type: "capability"
-      capability: "confirmation_classification"
-      input:
-        response: "${state.confirmation.response}"
-        current_properties: "${state.extracted_properties}"
-      output:
-        mapping:
-          decision: "state.confirmation.decision"
-          corrections: "state.confirmation.corrections"
-      on_success:
-        next: "route_confirmation"
-      on_failure:
-        next: "handle_system_failure"
-
-    - id: "route_confirmation"
-      name: "Route Confirmation"
-      type: "condition"
-      conditions:
-        - id: "user_confirmed"
-          when: "state.confirmation.decision == 'CONFIRMED'"
-          next: "complete_workflow"
-        - id: "user_requested_correction"
-          when: "state.confirmation.decision == 'CORRECTION_REQUIRED'"
-          next: "apply_user_corrections"
-        - id: "user_response_unclear"
-          when: "state.confirmation.decision == 'UNCLEAR'"
-          next: "request_confirmation_clarification"
-      otherwise:
-        next: "handle_system_failure"
-
-    - id: "apply_user_corrections"
-      name: "Apply User Corrections"
-      type: "state_update"
-      operations:
-        - operation: "merge"
-          target: "state.extracted_properties"
-          value: "${state.confirmation.corrections}"
-      next: "validate_required_properties"
-
-    - id: "request_confirmation_clarification"
-      name: "Request Confirmation Clarification"
-      type: "human_input"
-      prompt:
-        message: >
-          I could not determine whether you want to confirm the extracted
-          information. Please confirm the information or specify the fields
-          that need to be corrected.
-      output:
-        target: "state.confirmation.response"
-      on_response:
-        next: "classify_confirmation_response"
-
-    - id: "complete_workflow"
-      name: "Complete Workflow"
-      type: "terminal"
-      status: "COMPLETED"
-      output:
-        properties: "${state.extracted_properties}"
-        confirmation_status: "${state.confirmation.decision}"
-
-    - id: "handle_system_failure"
-      name: "Handle System Failure"
-      type: "terminal"
-      status: "FAILED"
-      output:
-        error:
-          code: "WORKFLOW_EXECUTION_FAILED"
-          message: "The request could not be processed at this time. Please try again later."

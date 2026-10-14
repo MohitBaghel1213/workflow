@@ -1,0 +1,50 @@
+api_version: "1.0"
+workflow:
+  id: chemical-alternative-advanced
+  name: Chemical Alternative — Advanced
+  version: "2.0.0"
+  description: Same reusable property-collection sub-workflow with a seven-property profile.
+  input:
+    schema:
+      type: object
+      required: [user_prompt]
+      properties:
+        user_prompt:
+          type: string
+          min_length: 1
+  state:
+    property_collection_result:
+      type: object
+      default: {}
+    execution:
+      type: object
+      default: {total_steps: 0}
+  policies:
+    execution_limits:
+      max_total_steps: 20
+  steps:
+    - id: collect_properties
+      name: Collect and Confirm Properties
+      type: workflow
+      workflow: property-collection
+      input:
+        user_prompt: "${input.user_prompt}"
+        property_profile: "${profiles.chemical_advanced}"
+      output:
+        target: state.property_collection_result
+      on_success:
+        next: complete_workflow
+      on_failure:
+        next: handle_failure
+    - id: complete_workflow
+      name: Return Collected Properties
+      type: terminal
+      status: COMPLETED
+      output:
+        result: "${state.property_collection_result}"
+    - id: handle_failure
+      name: Handle Child Workflow Failure
+      type: terminal
+      status: FAILED
+      output:
+        error: "${error}"

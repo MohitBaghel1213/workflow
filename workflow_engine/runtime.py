@@ -1,31 +1,35 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from typing import Any, Protocol
 
 
-class Runtime(ABC):
+class ModelClient(Protocol):
+    """Minimal provider-neutral interface for text generation."""
+
+    def complete(self, prompt: str) -> str:
+        ...
+
+
+class RuntimeAdapter(ABC):
+    """Framework adapter supplies model access and human-input transport.
+
+    Business capabilities are deliberately not implemented here. They live in
+    the shared capability layer and use this adapter's model_client when needed.
     """
-    Framework-neutral runtime contract.
 
-    A framework adapter implements this interface. The workflow engine never
-    imports LangChain, Claude Agent SDK, Microsoft Agent Framework, or any
-    model provider.
-    """
+    runtime_name = "base"
 
+    @property
     @abstractmethod
-    def invoke_capability(
-        self,
-        capability: str,
-        inputs: dict[str, Any],
-        context: dict[str, Any],
-    ) -> Any:
+    def model_client(self) -> ModelClient:
         raise NotImplementedError
 
     @abstractmethod
-    def request_human_input(
-        self,
-        prompt: str,
-        context: dict[str, Any],
-    ) -> str:
+    def request_human_input(self, prompt: str, context: dict[str, Any]) -> str:
         raise NotImplementedError
+
+
+# Backwards-compatible public name. Runtime now means a runtime adapter, not a
+# collection of capability-specific if/else branches.
+Runtime = RuntimeAdapter

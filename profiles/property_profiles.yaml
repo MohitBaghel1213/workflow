@@ -1,0 +1,57 @@
+api_version: "1.0"
+property_profiles:
+  common_product:
+    description: Shared product context fields.
+    properties:
+      - id: product_type
+        label: Product Type
+        type: string
+        required: true
+        description: Product or formulation where the chemical is used.
+      - id: application
+        label: Application
+        type: string
+        required: true
+        description: Intended application or process.
+
+  chemical_core:
+    description: Core chemical identification and operating fields.
+    properties:
+      - id: chemical_name
+        label: Chemical Name
+        type: string
+        required: true
+      - id: concentration
+        label: Concentration
+        type: string
+        required: true
+      - id: temperature
+        label: Operating Temperature
+        type: string
+        required: true
+
+  chemical_basic:
+    id: chemical_basic
+    name: Basic Chemical Requirements
+    description: Five mandatory properties for a basic chemical alternative request.
+    includes: [common_product, chemical_core]
+    properties: []
+
+  chemical_operating_conditions:
+    description: Additional operating-condition fields.
+    properties:
+      - id: pressure
+        label: Operating Pressure
+        type: string
+        required: true
+      - id: viscosity
+        label: Viscosity
+        type: string
+        required: true
+
+  chemical_advanced:
+    id: chemical_advanced
+    name: Advanced Chemical Requirements
+    description: Seven mandatory properties for an advanced chemical alternative request.
+    includes: [chemical_basic, chemical_operating_conditions]
+    properties: []

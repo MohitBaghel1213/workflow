@@ -1,73 +1,62 @@
-from pathlib import Path
-
-from workflow_engine import WorkflowEngine, load_workflow
-from runtimes.mock_runtime import MockRuntime
+from conftest import NonInteractiveRuntime
+from main import build_engine
 
 
-ROOT = Path(__file__).parents[1]
-
-
-def build_engine():
-    definition = load_workflow(ROOT / "workflow.yaml")
-    return WorkflowEngine(definition, MockRuntime())
-
-
-class NonInteractiveRuntime(MockRuntime):
-    def __init__(self, responses):
-        self.responses = iter(responses)
-
-    def request_human_input(self, prompt, context):
-        return next(self.responses)
-
-
-def test_complete_without_hitl():
-    definition = load_workflow(ROOT / "workflow.yaml")
+def test_basic_workflow_completes_without_missing_information():
     runtime = NonInteractiveRuntime(["yes"])
-    engine = WorkflowEngine(definition, runtime)
-
+    engine = build_engine("basic", runtime)
     result = engine.run({
         "user_prompt": (
-            "property_a=A property_b=B property_c=C "
-            "property_d=D property_e=E"
+            "product_type=paint chemical_name=chemX concentration=10% "
+            "application=coating temperature=80C"
         )
     })
-
     assert result.status == "COMPLETED"
-    assert result.output["properties"]["property_a"] == "A"
+    properties = result.output["result"]["properties"]
+    assert properties["product_type"] == "paint"
+    assert result.output["result"]["confirmation_status"] == "CONFIRMED"
 
 
-def test_missing_property_uses_hitl_and_reextracts():
-    definition = load_workflow(ROOT / "workflow.yaml")
-    runtime = NonInteractiveRuntime([
-        "property_e=E",
-        "yes",
-    ])
-    engine = WorkflowEngine(definition, runtime)
-
+def test_missing_property_uses_human_input_and_reextracts():
+    runtime = NonInteractiveRuntime(["pressure=5bar viscosity=low", "yes"])
+    engine = build_engine("advanced", runtime)
     result = engine.run({
         "user_prompt": (
-            "property_a=A property_b=B property_c=C property_d=D"
+            "product_type=paint chemical_name=chemX concentration=10% "
+            "application=coating temperature=80C"
         )
     })
-
     assert result.status == "COMPLETED"
-    assert result.output["properties"]["property_e"] == "E"
+    properties = result.output["result"]["properties"]
+    assert properties["pressure"] == "5bar"
+    assert properties["viscosity"] == "low"
+    assert len(runtime.prompts) == 2
 
 
 def test_confirmation_correction_is_revalidated():
-    definition = load_workflow(ROOT / "workflow.yaml")
-    runtime = NonInteractiveRuntime([
-        "property_c=CORRECTED",
-        "yes",
-    ])
-    engine = WorkflowEngine(definition, runtime)
-
+    runtime = NonInteractiveRuntime(["temperature=120C", "yes"])
+    engine = build_engine("basic", runtime)
     result = engine.run({
         "user_prompt": (
-            "property_a=A property_b=B property_c=C "
-            "property_d=D property_e=E"
+            "product_type=paint chemical_name=chemX concentration=10% "
+            "application=coating temperature=80C"
         )
     })
-
     assert result.status == "COMPLETED"
-    assert result.output["properties"]["property_c"] == "CORRECTED"
+    assert result.output["result"]["properties"]["temperature"] == "120C"
+
+
+def test_basic_and_advanced_use_different_profiles():
+    basic_runtime = NonInteractiveRuntime(["yes"])
+    basic = build_engine("basic", basic_runtime).run({
+        "user_prompt": "product_type=p chemical_name=c concentration=1 application=a temperature=t"
+    })
+    assert basic.status == "COMPLETED"
+    assert "pressure" not in basic.output["result"]["properties"]
+
+    advanced_runtime = NonInteractiveRuntime(["pressure=p viscosity=v", "yes"])
+    advanced = build_engine("advanced", advanced_runtime).run({
+        "user_prompt": "product_type=p chemical_name=c concentration=1 application=a temperature=t"
+    })
+    assert advanced.status == "COMPLETED"
+    assert advanced.output["result"]["properties"]["pressure"] == "p"
