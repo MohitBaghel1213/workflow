@@ -1,296 +1,86 @@
-# Composable Framework-Independent Declarative Workflow Engine
+# Framework-Independent Chemical Alternative Workflow
 
-A runnable reference implementation for composing workflows, sub-workflows, reusable property profiles, shared capabilities, and interchangeable runtime adapters.
+This project is a runnable reference implementation of the chemical/material substitution workflow described in `workflows/chemical_alternative.yaml`. The workflow engine is declarative; domain operations are registered capabilities; tool implementations are registered separately; and candidate research uses a shared tool-calling agent runtime.
 
-The key architectural change is that **capabilities are no longer implemented inside each runtime**. The workflow engine invokes a generic `CapabilityExecutor`; the executor resolves a capability in a registry and invokes its handler. Runtime adapters supply model access and human-input transport, while the same capability handlers are reused across Mock, LangChain, and Claude implementations.
+> **Demo/data warning:** The knowledge graph, web search, inferred property values, candidate data, and match scores in this package are mocked. The Ashby equation is an illustrative placeholder. This is runnable architecture/demo code, not a validated engineering recommendation system. Connect vetted material databases, live search, domain-specific equation generation, screening rules, authentication, persistence, observability, and human approval before production use.
 
-## Architecture
+## Run
 
-```text
-Workflow YAML / Sub-workflows / Property Profiles
-                     |
-                     v
-              WorkflowEngine
-   state, routing, retries, nested workflows
-                     |
-                     v
-            CapabilityExecutor
-       input checks + registry dispatch
-                     |
-                     v
-            CapabilityRegistry
-      capability ID -> handler instance
-          /          |           \
-         v           v            v
-  Python handler  LLM handler  Tool-backed handler
-                      |               |
-                      v               v
-              Runtime.model_client  ToolManager
-                      |
-          +-----------+------------+
-          |           |            |
-          v           v            v
-        Mock      LangChain      Claude SDK
-```
-
-Responsibilities:
-
-- `WorkflowEngine`: state, transitions, conditions, human input, state updates, nested workflows, terminal results.
-- `CapabilityRegistry`: registers capability IDs and their handlers/metadata.
-- `CapabilityExecutor`: validates required inputs, dispatches handlers, normalizes results. It has no capability-specific `if/else` chain.
-- `CapabilityHandler`: reusable implementation of a capability such as property extraction, validation, or confirmation classification.
-- `AgentCapability`: generic wrapper that reads agent instructions/tool allowlists from YAML and delegates to the shared agent runtime.
-- `ToolCallingAgentRuntime`: owns the reusable model → tool → result → model loop. New agentic capabilities do not implement their own loop.
-- `ToolManager` (`ToolRegistry` alias): registry/dispatcher for concrete tools used by capabilities (MCP, HTTP, databases, etc.).
-- `RuntimeAdapter`: supplies a `model_client` and human-input transport. It does not implement business capabilities.
-- `WorkflowRegistry`: resolves sub-workflow IDs to YAML definitions.
-- Property profile loader: resolves profile composition using `includes` or `extends`.
-
-
-### Agent tool-calling demo
-
-The advanced workflow maps the business capability `find_chemical_alternatives` to the reusable `agent` implementation in YAML. `AgentCapability` delegates to `ToolCallingAgentRuntime`, which owns the only tool-calling loop. Shared services are injected by `CapabilityExecutor`, so callers do not need to manually provide `tool_manager` or a tool-calling model in each execution context.
+Python 3.11+ recommended.
 
 ```bash
-python main.py --workflow advanced --demo
-python -m pytest -q
-```
-
-The mock demo runs without credentials. `MockToolCallingModel` deterministically calls the configured tools in order; it is for architecture demonstrations, not a real LLM planner. The LangChain and Claude adapters currently provide text-completion interfaces; to use real provider-driven tool selection, implement the `ToolCallingModel.next_action(messages, tools)` contract and inject it into `ToolCallingAgentRuntime`.
-
-## Project structure
-
-```text
-framework_independent_declarative_workflow/
-├── workflow.yaml                         # Basic top-level workflow
-├── workflows/
-│   ├── property_collection.yaml          # Reusable sub-workflow
-│   └── chemical_alternative_advanced.yaml # Seven-property composition
-├── profiles/property_profiles.yaml       # Reusable property groups/profiles
-├── workflow_engine/
-│   ├── engine.py
-│   ├── bootstrap.py
-│   ├── registry.py
-│   ├── loader.py
-│   ├── expression.py
-│   ├── runtime.py
-│   └── capabilities/
-│       ├── contracts.py
-│       ├── registry.py
-│       ├── executor.py
-│       └── handlers.py
-├── tools/manager.py
-├── TOOL_CALLING_WALKTHROUGH.md               # End-to-end agent/tool call path
-├── runtimes/
-│   ├── mock_runtime.py
-│   ├── langchain_runtime.py
-│   ├── claude_runtime.py
-│   └── llm_utils.py
-├── examples/
-├── tests/
-└── main.py
-```
-
-## Install and run
-
-Python 3.11 or newer is recommended.
-
-### Local mock runtime (no API key)
-
-```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+python main.py --demo
+```
+
+Interactive mode:
+
+```bash
 python main.py
 ```
 
-Enter values using `property_id=value` syntax. The basic workflow requires five fields:
+Or pass a prompt directly:
 
-```text
-product_type=paint chemical_name=chemX concentration=10% application=coating temperature=80C
+```bash
+python main.py --prompt "material=ExamplePolymer, product=toothbrush, functional_requirement=durable, reason_for_substitution=reduce cost"
 ```
 
-If a field is missing, the workflow asks for it. Confirm with `yes`, or correct a field with `temperature=120C`.
+Run tests:
 
-Run the advanced profile (seven fields):
-
-```powershell
-python main.py --workflow advanced
-```
-
-The advanced profile also requires `pressure` and `viscosity`.
-
-### Complete tool-calling demonstration (no API key)
-
-```powershell
-python main.py --workflow advanced --demo
-```
-
-This executes property extraction and confirmation, then invokes the `find_chemical_alternatives` capability. That capability obtains tool schemas from `ToolManager`, passes them to a deterministic mock tool-calling model, executes requested tools through the registry, feeds tool results back into the model loop, and returns ranked mock candidates plus a tool trace. See `TOOL_CALLING_WALKTHROUGH.md`. The mock model decisions, candidate data, and scores are illustrative only.
-
-### LangChain runtime
-
-```powershell
-pip install -r requirements-langchain.txt
-$env:OPENAI_API_KEY="your-key"
-$env:LANGCHAIN_MODEL="gpt-4o-mini"
-python examples/langchain_usage.py
-```
-
-For an OpenAI-compatible endpoint, set `LANGCHAIN_BASE_URL` and the relevant API key/model environment variables.
-
-### Claude Agent SDK runtime
-
-```powershell
-pip install -r requirements-claude.txt
-$env:ANTHROPIC_API_KEY="your-key"
-$env:ANTHROPIC_MODEL="claude-sonnet-4-5"
-python examples/claude_usage.py
-```
-
-The Claude adapter uses the SDK `query()` API to provide the same simple text-completion contract used by shared LLM capabilities. It does not execute workflow steps or own capability dispatch.
-
-### Tests
-
-```powershell
+```bash
 pip install -r requirements-dev.txt
 pytest -q
 ```
 
-The tests run without network access or provider API keys.
+## Workflow files
 
-## How composition works
+- `workflows/chemical_alternative.yaml`: main workflow; extracts six contract slots, enforces mandatory material, asks for confirmation, resolves missing values, builds application context, creates/ confirms Ashby formulation, generates an equation placeholder, resolves baseline/candidate properties, searches candidates, screens, and ranks.
+- `workflows/property-resolution.yaml`: reusable ordered fallback sub-workflow: knowledge graph → web search → LLM inference → ask user. It is reused for missing slots, baseline properties, and candidate properties.
+- Previous demo workflows have been removed from the active workflow registry.
 
-### 1. Top-level workflow calls a reusable sub-workflow
+## Architecture
 
-The root `workflow.yaml` invokes `property-collection` and passes a profile:
+- `WorkflowEngine`: executes the workflow graph and owns execution limits/state.
+- `StepHandlerRegistry`: dispatches generic step types (`capability`, `condition`, `human_input`, `state_update`, `workflow`, `terminal`).
+- `CapabilityRegistry` / `CapabilityExecutor`: resolves capability IDs and injects shared services.
+- `ChemicalWorkflowCapability`: local demo implementations for domain operations. Replace source and domain methods with real implementations.
+- `ToolManager`: tool registry and executor. Tools are registered once with descriptions and schemas.
+- `ToolCallingAgentRuntime`: shared model → tool call → tool result → model loop. The `search_candidate_materials` capability reuses it.
+- `MockToolCallingModel`: deterministic scripted model used for offline execution. It demonstrates the tool-call protocol; it does not perform genuine LLM reasoning.
 
-```yaml
-- id: collect_properties
-  type: workflow
-  workflow: property-collection
-  input:
-    user_prompt: "${input.user_prompt}"
-    property_profile: "${profiles.chemical_basic}"
+## Add a tool
+
+1. Implement an object exposing `execute(inputs, context)`.
+2. Register it in `build_tool_manager()` with a stable ID, description, and JSON input schema.
+3. Add the tool ID to the capability's allowlist.
+4. For a real model, implement the `ToolCallingModel.next_action(messages, tools)` contract for your provider, preserving provider tool-call IDs and result formats as needed.
+
+## Replace mock integrations
+
+Replace `resolve_from_knowledge_graph`, `resolve_from_web`, and `resolve_with_llm` in `workflow_engine/capabilities/chemical.py` with service clients. A source should return `found: true` only when it has sufficient evidence for the requested property, with provenance/citations. Do not use unverified LLM guesses as material-property facts. The final screening/ranking stages should use deterministic constraints and validated material-index calculations; the LLM should summarize evidence and uncertainty, not certify equivalence.
+
+## Input contract
+
+The workflow accepts:
+
+```json
+{
+  "user_prompt": "material=ExamplePolymer, product=toothbrush, functional_requirement=durable, reason_for_substitution=reduce cost",
+  "files": [],
+  "request_id": "optional-request-id"
+}
 ```
 
-The advanced workflow passes `${profiles.chemical_advanced}` to the exact same sub-workflow. No extraction/validation logic is duplicated.
+`files` currently accepts objects containing extracted `text`/`content` or a `name`. PDF parsing/OCR and secure file storage are not implemented in this demo; pass extracted text or implement a file-ingestion capability.
 
-### 2. Property profiles compose smaller groups
+## Known limitations before production
 
-In `profiles/property_profiles.yaml`:
-
-- `chemical_basic` includes `common_product` + `chemical_core` = five properties.
-- `chemical_advanced` includes `chemical_basic` + `chemical_operating_conditions` = seven properties.
-
-`load_profiles()` resolves `includes` and `extends`, preserves declaration order, permits later definitions to override earlier property definitions by ID, and detects unknown/circular references.
-
-### 3. Add a capability without changing the executor
-
-Implement a handler with this contract:
-
-```python
-class MyCapability:
-    def execute(self, inputs, context):
-        return {"result": "..."}
-```
-
-Register it once during application setup:
-
-```python
-registry.register(
-    "my_capability",
-    MyCapability(),
-    metadata={"required_inputs": ["value"]},
-)
-```
-
-Then reference it in YAML:
-
-```yaml
-- id: do_something
-  type: capability
-  capability: my_capability
-  input:
-    value: "${input.some_value}"
-  output:
-    target: state.my_result
-  on_success:
-    next: next_step
-```
-
-The generic executor does not need to change.
-
-### 4. Use a registered tool from a capability
-
-`ToolManager` registers concrete tool integrations. A tool-backed capability can call `context.services["tool_manager"].execute(tool_id, inputs, context)`. The project includes a mock chemical database search tool to demonstrate this extension point; it deliberately returns no real chemical candidates until connected to an actual data source.
-
-### 5. Add a runtime
-
-Implement `RuntimeAdapter` with:
-
-- `runtime_name`
-- a `model_client` whose `complete(prompt)` method returns text
-- `request_human_input(prompt, context)`
-
-The shared capability handlers and YAML do not need to change. If a capability genuinely requires runtime-specific agent orchestration, implement that capability as a small adapter/handler that uses the runtime service, rather than adding branches to `CapabilityExecutor`.
-
-## Expression roots
-
-Workflow expressions support:
-
-- `${input.some_field}` — workflow input
-- `${state.some_field}` — mutable workflow state
-- `${schemas.some_schema}` — local schemas
-- `${profiles.profile_id}` — resolved profile configuration
-- `${error}` — current execution error
-
-An expression that is the entire value preserves its type (dict/list/etc.). Embedded expressions are interpolated as strings.
-
-## Important implementation notes
-
-- The included `MockRuntime` is deterministic and fully local; it understands `property_id=value` demo syntax.
-- `LangChainRuntime` and `ClaudeRuntime` require their respective optional dependencies and provider credentials.
-- The sample `chemical_search` tool is a stub, not a chemical recommendation engine.
-- The engine is synchronous for this reference implementation. The Claude adapter bridges the SDK's async query API when no event loop is already running; an application hosted inside an async event loop should introduce an async engine/adapter rather than nesting `asyncio.run()`.
-- Durable checkpoints, resumable human-in-the-loop sessions, authentication/authorization, audit logs, and production-grade retry/backoff are follow-on production concerns.
-
-## Extending the engine with new step types
-
-The core `WorkflowEngine` does not dispatch with a step-type `if/else` chain. It
-resolves each step's `type` through `StepHandlerRegistry`. Type-specific
-validation and execution live in registered handlers; workflow-wide invariants
-such as duplicate IDs and valid graph edges are checked by `WorkflowValidator`.
-
-To add a step type:
-
-1. Implement `validate(step)` and `execute(step, context)` on a handler.
-2. Return a `StepOutcome` from `execute`.
-3. Register it in `build_step_handler_registry()` (or register it in a custom
-   registry passed to `WorkflowEngine`).
-
-Example:
-
-```python
-from workflow_engine import (
-    StepOutcome, WorkflowEngine, WorkflowDefinitionError, build_step_handler_registry
-)
-
-class AuditStepHandler:
-    def validate(self, step):
-        if not step.get("next"):
-            raise WorkflowDefinitionError("audit step requires next")
-
-    def execute(self, step, context):
-        context.workflow_context.state["audit_marker"] = step.get("message", "audited")
-        return StepOutcome(next_step=step["next"])
-
-registry = build_step_handler_registry()
-registry.register("audit", AuditStepHandler())
-engine = WorkflowEngine(definition, runtime, step_handler_registry=registry)
-```
-
-Do not create a new step type for each business capability. Prefer the existing
-`type: capability` primitive with a new registered capability handler. Add a
-new step type only when it introduces a genuinely different orchestration
-primitive (for example `parallel`, `foreach`, or an explicit approval gate).
+- No durable checkpoint/resume or persisted human-input sessions.
+- No authentication, authorization, tenant isolation, rate limits, or secrets management beyond normal environment configuration.
+- No real KG/web connector or PDF parser/OCR.
+- No verified material properties, safety/compliance assessment, or real Ashby equation solver.
+- The demo human input is synchronous. A production service should pause and resume executions through a durable interaction store.
+- Tool outputs are mocked; all scores and candidate rankings are illustrative.

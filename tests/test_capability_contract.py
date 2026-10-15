@@ -36,7 +36,8 @@ def test_tool_manager_dispatches_registered_tool():
     manager = build_tool_manager()
     result = manager.execute("chemical_database_search", {"query": "chemical X"}, context(MockRuntime()))
     assert result["query"] == "chemical X"
-    assert result["candidates"] == []
+    assert len(result["candidates"]) == 2
+    assert result["source"] == "HARDCODED_DEMO_DATA"
 
 
 def test_tool_backed_capability_uses_tool_manager():

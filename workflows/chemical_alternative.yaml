@@ -1,0 +1,535 @@
+api_version: "1.0"
+workflow:
+  id: chemical-alternative
+  name: Chemical Alternative Discovery
+  version: "1.0.0"
+  description: >-
+    End-to-end material substitution workflow. Orchestration is declarative;
+    source fallback is delegated to the reusable property-resolution workflow.
+  input:
+    schema:
+      type: object
+      required: [user_prompt]
+      properties:
+        user_prompt:
+          type: string
+          min_length: 1
+        files:
+          type: array
+          default: []
+          items:
+            type: object
+        request_id:
+          type: string
+  state:
+    slots:
+      type: object
+      default: {}
+    slot_validation:
+      type: object
+      default: {status: NOT_STARTED, missing: [], errors: []}
+    slot_confirmation:
+      type: object
+      default: {decision: null, response: null, corrections: {}}
+    resolved_slots:
+      type: object
+      default: {}
+    application_context:
+      type: object
+      default: {}
+    ashby:
+      type: object
+      default: {function: null, objective: null, constraints: [], free_variables: []}
+    ashby_confirmation:
+      type: object
+      default: {decision: null, response: null, corrections: {}}
+    equation:
+      type: object
+      default: {}
+    baseline_properties:
+      type: object
+      default: {}
+    candidate_search:
+      type: object
+      default: {candidates: []}
+    candidate_properties:
+      type: object
+      default: {candidates: []}
+    alternatives:
+      type: object
+      default: {candidates: []}
+    screening:
+      type: object
+      default: {passed: [], rejected: []}
+    ranking:
+      type: object
+      default: {ranked_candidates: []}
+    human:
+      type: object
+      default: {response: null}
+    failure:
+      type: object
+      default: {category: null, details: null}
+    execution:
+      type: object
+      default: {total_steps: 0, slot_confirmation_attempts: 0, ashby_confirmation_attempts: 0}
+  policies:
+    execution_limits:
+      max_total_steps: 150
+      max_extraction_iterations: 8
+      max_confirmation_iterations: 6
+      max_resolution_attempts: 4
+      max_agent_iterations: 12
+    retry:
+      default_max_attempts: 3
+      backoff:
+        strategy: exponential
+        initial_delay_seconds: 1
+        maximum_delay_seconds: 10
+  capabilities:
+    definitions:
+      search_candidate_materials:
+        implementation: search_candidate_materials
+        config: {}
+    allowed:
+      - extract_contract_slots
+      - validate_contract_slots
+      - classify_user_confirmation
+      - merge_resolved_properties
+      - build_application_context
+      - formulate_ashby_problem
+      - classify_ashby_confirmation
+      - generate_material_equation
+      - derive_baseline_property_request
+      - search_candidate_materials
+      - derive_candidate_property_request
+      - construct_alternatives
+      - screen_alternatives
+      - rank_alternatives
+      - classify_failure
+  steps:
+    - id: extract_slots
+      name: Extract six contract slots from prompt and files
+      type: capability
+      capability: extract_contract_slots
+      input:
+        user_prompt: "${input.user_prompt}"
+        files: "${input.files}"
+        slot_contract:
+          material: {required: true}
+          part: {required: false}
+          product: {required: false}
+          component: {required: false}
+          functional_requirement: {required: false}
+          reason_for_substitution: {required: false}
+      output:
+        target: state.slots
+      on_success: {next: validate_slots}
+      on_failure: {next: classify_failure}
+
+    - id: validate_slots
+      name: Validate slot shape and required material
+      type: capability
+      capability: validate_contract_slots
+      input:
+        slots: "${state.slots}"
+        required_slots: [material]
+        all_slots: [material, part, product, component, functional_requirement, reason_for_substitution]
+      output:
+        target: state.slot_validation
+      on_success: {next: route_slot_validation}
+      on_failure: {next: classify_failure}
+
+    - id: route_slot_validation
+      name: Require material before proceeding
+      type: condition
+      conditions:
+        - id: material_missing
+          when: "'material' in state.slot_validation.missing"
+          next: ask_for_material
+        - id: material_present
+          when: "state.slot_validation.status == 'VALID' or not ('material' in state.slot_validation.missing)"
+          next: confirm_initial_slots
+      otherwise: handle_failure
+
+    - id: ask_for_material
+      name: Ask user for mandatory material
+      type: human_input
+      prompt:
+        message: "Which material are you trying to replace? This field is mandatory."
+      output: {target: state.human.response}
+      on_response: {next: merge_material_response}
+
+    - id: merge_material_response
+      name: Add user-provided material and re-extract
+      type: state_update
+      operations:
+        - operation: append_to_input
+          target: input.user_prompt
+          value: "\nMaterial to replace: ${state.human.response}"
+      next: extract_slots
+
+    - id: confirm_initial_slots
+      name: Confirm extracted six slots
+      type: human_input
+      prompt:
+        message: >-
+          Please review the extracted slots: ${state.slots}. Reply ACCEPT to confirm,
+          or EDIT followed by the fields to change. Missing non-mandatory fields may
+          be resolved from approved sources after confirmation.
+      output: {target: state.slot_confirmation.response}
+      on_response: {next: classify_initial_confirmation}
+
+    - id: classify_initial_confirmation
+      name: Interpret accept or edits
+      type: capability
+      capability: classify_user_confirmation
+      input:
+        response: "${state.slot_confirmation.response}"
+        current_values: "${state.slots}"
+        allowed_decisions: [ACCEPTED, EDITS_REQUESTED, UNCLEAR]
+      output: {target: state.slot_confirmation}
+      on_success: {next: route_initial_confirmation}
+      on_failure: {next: classify_failure}
+
+    - id: route_initial_confirmation
+      name: Route slot confirmation
+      type: condition
+      conditions:
+        - id: accepted
+          when: "state.slot_confirmation.decision == 'ACCEPTED'"
+          next: route_missing_slots
+        - id: edits_requested
+          when: "state.slot_confirmation.decision == 'EDITS_REQUESTED'"
+          next: apply_slot_edits
+        - id: unclear
+          when: "state.slot_confirmation.decision == 'UNCLEAR'"
+          next: clarify_slot_confirmation
+      otherwise: handle_failure
+
+    - id: clarify_slot_confirmation
+      name: Clarify slot confirmation
+      type: human_input
+      prompt:
+        message: "Please reply ACCEPT to confirm the slots, or EDIT and specify the fields to change."
+      output: {target: state.slot_confirmation.response}
+      on_response: {next: classify_initial_confirmation}
+
+    - id: apply_slot_edits
+      name: Apply user edits to slots
+      type: state_update
+      operations:
+        - operation: merge
+          target: state.slots
+          value: "${state.slot_confirmation.corrections}"
+      next: validate_slots
+
+    - id: route_missing_slots
+      name: Resolve only when one or more slots are missing
+      type: condition
+      conditions:
+        - id: slots_missing
+          when: "length(state.slot_validation.missing) > 0"
+          next: resolve_missing_slots
+      otherwise: {next: build_application_context}
+
+    - id: resolve_missing_slots
+      name: Resolve non-mandatory missing slots through reusable fallback
+      type: workflow
+      workflow: property-resolution
+      input:
+        resolution_kind: contract_slots
+        target: "${state.slot_validation.missing}"
+        known_values: "${state.slots}"
+        application_context: {}
+        files: "${input.files}"
+        fallback_policy: [knowledge_graph, web_search, llm_inference, ask_user]
+      output: {target: state.resolved_slots}
+      on_success: {next: merge_resolved_slots}
+      on_failure: {next: classify_failure}
+
+    - id: merge_resolved_slots
+      name: Merge resolved slots and validate
+      type: capability
+      capability: merge_resolved_properties
+      input:
+        base_values: "${state.slots}"
+        resolved_values: "${state.resolved_slots}"
+      output: {target: state.slots}
+      on_success: {next: validate_after_resolution}
+      on_failure: {next: classify_failure}
+
+    - id: validate_after_resolution
+      name: Validate resolved contract slots
+      type: capability
+      capability: validate_contract_slots
+      input:
+        slots: "${state.slots}"
+        required_slots: [material, part, product, component, functional_requirement, reason_for_substitution]
+        all_slots: [material, part, product, component, functional_requirement, reason_for_substitution]
+      output: {target: state.slot_validation}
+      on_success: {next: route_after_resolution}
+      on_failure: {next: classify_failure}
+
+    - id: route_after_resolution
+      name: Do not request final confirmation until all six slots have values
+      type: condition
+      conditions:
+        - id: unresolved_slots_remain
+          when: "length(state.slot_validation.missing) > 0"
+          next: resolve_missing_slots
+      otherwise: {next: confirm_resolved_slots}
+
+    - id: confirm_resolved_slots
+      name: Confirm completed contract slots
+      type: human_input
+      prompt:
+        message: >-
+          The slot values are now: ${state.slots}. Please ACCEPT or EDIT these values.
+          Values inferred from sources will be identified with their evidence by the application.
+      output: {target: state.slot_confirmation.response}
+      on_response: {next: classify_final_slot_confirmation}
+
+    - id: classify_final_slot_confirmation
+      name: Classify final slot confirmation
+      type: capability
+      capability: classify_user_confirmation
+      input:
+        response: "${state.slot_confirmation.response}"
+        current_values: "${state.slots}"
+        allowed_decisions: [ACCEPTED, EDITS_REQUESTED, UNCLEAR]
+      output: {target: state.slot_confirmation}
+      on_success: {next: route_final_slot_confirmation}
+      on_failure: {next: classify_failure}
+
+    - id: route_final_slot_confirmation
+      name: Route final slot confirmation
+      type: condition
+      conditions:
+        - id: final_slots_accepted_and_complete
+          when: "state.slot_confirmation.decision == 'ACCEPTED' and length(state.slot_validation.missing) == 0"
+          next: build_application_context
+        - id: final_slots_accepted_but_incomplete
+          when: "state.slot_confirmation.decision == 'ACCEPTED' and length(state.slot_validation.missing) > 0"
+          next: resolve_missing_slots
+        - id: final_slot_edits
+          when: "state.slot_confirmation.decision == 'EDITS_REQUESTED'"
+          next: apply_slot_edits
+        - id: final_slot_unclear
+          when: "state.slot_confirmation.decision == 'UNCLEAR'"
+          next: clarify_slot_confirmation
+      otherwise: handle_failure
+
+    - id: build_application_context
+      name: Build application context from slots and files
+      type: capability
+      capability: build_application_context
+      input:
+        slots: "${state.slots}"
+        files: "${input.files}"
+      output: {target: state.application_context}
+      on_success: {next: formulate_ashby}
+      on_failure: {next: classify_failure}
+
+    - id: formulate_ashby
+      name: Derive Ashby formulation
+      type: capability
+      capability: formulate_ashby_problem
+      input:
+        slots: "${state.slots}"
+        application_context: "${state.application_context}"
+        required_outputs: [function, objective, constraints, free_variables]
+      output: {target: state.ashby}
+      on_success: {next: confirm_ashby}
+      on_failure: {next: classify_failure}
+
+    - id: confirm_ashby
+      name: User confirms Ashby formulation
+      type: human_input
+      prompt:
+        message: >-
+          Review the proposed Ashby formulation (function, objective, constraints,
+          free variables): ${state.ashby}. Reply ACCEPT or EDIT with corrections.
+      output: {target: state.ashby_confirmation.response}
+      on_response: {next: classify_ashby_confirmation}
+
+    - id: classify_ashby_confirmation
+      name: Classify Ashby confirmation
+      type: capability
+      capability: classify_ashby_confirmation
+      input:
+        response: "${state.ashby_confirmation.response}"
+        current_values: "${state.ashby}"
+      output: {target: state.ashby_confirmation}
+      on_success: {next: route_ashby_confirmation}
+      on_failure: {next: classify_failure}
+
+    - id: route_ashby_confirmation
+      name: Route Ashby confirmation
+      type: condition
+      conditions:
+        - id: ashby_accepted
+          when: "state.ashby_confirmation.decision == 'ACCEPTED'"
+          next: generate_equation
+        - id: ashby_edits
+          when: "state.ashby_confirmation.decision == 'EDITS_REQUESTED'"
+          next: apply_ashby_edits
+        - id: ashby_unclear
+          when: "state.ashby_confirmation.decision == 'UNCLEAR'"
+          next: clarify_ashby_confirmation
+      otherwise: handle_failure
+
+    - id: apply_ashby_edits
+      name: Apply Ashby corrections
+      type: state_update
+      operations:
+        - operation: merge
+          target: state.ashby
+          value: "${state.ashby_confirmation.corrections}"
+      next: confirm_ashby
+
+    - id: clarify_ashby_confirmation
+      name: Clarify Ashby confirmation
+      type: human_input
+      prompt:
+        message: "Reply ACCEPT to approve the Ashby formulation, or EDIT and provide corrections."
+      output: {target: state.ashby_confirmation.response}
+      on_response: {next: classify_ashby_confirmation}
+
+    - id: generate_equation
+      name: Generate material-index equation
+      type: capability
+      capability: generate_material_equation
+      input:
+        ashby: "${state.ashby}"
+        application_context: "${state.application_context}"
+        baseline_material: "${state.slots.material}"
+      output: {target: state.equation}
+      on_success: {next: resolve_baseline_properties}
+      on_failure: {next: classify_failure}
+
+    - id: resolve_baseline_properties
+      name: Resolve baseline properties through reusable fallback
+      type: workflow
+      workflow: property-resolution
+      input:
+        resolution_kind: baseline_material_properties
+        target: "${state.slots.material}"
+        known_values: {}
+        application_context: "${state.application_context}"
+        equation: "${state.equation}"
+        files: "${input.files}"
+        fallback_policy: [knowledge_graph, web_search, llm_inference, ask_user]
+      output: {target: state.baseline_properties}
+      on_success: {next: search_candidates}
+      on_failure: {next: classify_failure}
+
+    - id: search_candidates
+      name: Search for candidate materials using deep research agent
+      type: capability
+      capability: search_candidate_materials
+      input:
+        slots: "${state.slots}"
+        application_context: "${state.application_context}"
+        ashby: "${state.ashby}"
+        equation: "${state.equation}"
+        baseline_properties: "${state.baseline_properties}"
+        research_policy:
+          require_citations: true
+          preserve_functional_requirements: true
+          max_candidates: 30
+      output: {target: state.candidate_search}
+      on_success: {next: resolve_candidate_properties}
+      on_failure: {next: classify_failure}
+
+    - id: resolve_candidate_properties
+      name: Resolve candidate properties through reusable fallback
+      type: workflow
+      workflow: property-resolution
+      input:
+        resolution_kind: candidate_material_properties
+        target: "${state.candidate_search.candidates}"
+        known_values: {}
+        application_context: "${state.application_context}"
+        equation: "${state.equation}"
+        files: "${input.files}"
+        fallback_policy: [knowledge_graph, web_search, llm_inference, ask_user]
+      output: {target: state.candidate_properties}
+      on_success: {next: construct_alternatives}
+      on_failure: {next: classify_failure}
+
+    - id: construct_alternatives
+      name: Construct comparable alternatives
+      type: capability
+      capability: construct_alternatives
+      input:
+        baseline_material: "${state.slots.material}"
+        baseline_properties: "${state.baseline_properties}"
+        candidates: "${state.candidate_search.candidates}"
+        candidate_properties: "${state.candidate_properties}"
+        equation: "${state.equation}"
+        ashby: "${state.ashby}"
+      output: {target: state.alternatives}
+      on_success: {next: screen_alternatives}
+      on_failure: {next: classify_failure}
+
+    - id: screen_alternatives
+      name: Screen alternatives against hard constraints
+      type: capability
+      capability: screen_alternatives
+      input:
+        alternatives: "${state.alternatives.candidates}"
+        baseline_properties: "${state.baseline_properties}"
+        constraints: "${state.ashby.constraints}"
+        functional_requirement: "${state.slots.functional_requirement}"
+      output: {target: state.screening}
+      on_success: {next: rank_alternatives}
+      on_failure: {next: classify_failure}
+
+    - id: rank_alternatives
+      name: Rank screened alternatives
+      type: capability
+      capability: rank_alternatives
+      input:
+        screened_candidates: "${state.screening.passed}"
+        equation: "${state.equation}"
+        ashby: "${state.ashby}"
+        reason_for_substitution: "${state.slots.reason_for_substitution}"
+      output: {target: state.ranking}
+      on_success: {next: complete_workflow}
+      on_failure: {next: classify_failure}
+
+    - id: classify_failure
+      name: Classify failure for bounded retry or terminal handling
+      type: capability
+      capability: classify_failure
+      input:
+        error: "${error}"
+      output: {target: state.failure}
+      on_success: {next: handle_failure}
+      on_failure: {next: handle_failure}
+
+    - id: handle_failure
+      name: Fail safely with diagnostic context
+      type: terminal
+      status: FAILED
+      output:
+        code: CHEMICAL_ALTERNATIVE_WORKFLOW_FAILED
+        failure: "${state.failure}"
+        request_id: "${input.request_id}"
+
+    - id: complete_workflow
+      name: Return ranked alternatives and evidence
+      type: terminal
+      status: COMPLETED
+      output:
+        request_id: "${input.request_id}"
+        slots: "${state.slots}"
+        application_context: "${state.application_context}"
+        ashby: "${state.ashby}"
+        equation: "${state.equation}"
+        baseline_properties: "${state.baseline_properties}"
+        candidates: "${state.candidate_search.candidates}"
+        candidate_properties: "${state.candidate_properties}"
+        screening: "${state.screening}"
+        ranking: "${state.ranking}"

@@ -1,0 +1,172 @@
+api_version: "1.0"
+workflow:
+  id: property-resolution
+  name: Reusable Property Resolution
+  version: "1.0.0"
+  description: >-
+    Resolves requested properties using ordered fallbacks: knowledge graph,
+    web search, LLM inference, then user input. Reused for missing slots,
+    baseline material properties, and candidate material properties.
+  input:
+    schema:
+      type: object
+      required: [resolution_kind, target, fallback_policy]
+      properties:
+        resolution_kind: {type: string}
+        target: {}
+        known_values: {type: object, default: {}}
+        application_context: {type: object, default: {}}
+        equation: {type: object, default: {}}
+        files: {type: array, default: []}
+        fallback_policy: {type: array}
+  state:
+    result:
+      type: object
+      default: {values: {}, evidence: [], unresolved: []}
+    attempt:
+      type: object
+      default: {source: null, found: false, values: {}, evidence: []}
+    human:
+      type: object
+      default: {response: null}
+  policies:
+    execution_limits:
+      max_total_steps: 30
+      max_resolution_attempts: 4
+  capabilities:
+    allowed: [resolve_from_knowledge_graph, resolve_from_web, resolve_with_llm, merge_resolution_result, validate_resolution_result]
+  steps:
+    - id: knowledge_graph_lookup
+      name: "First fallback: knowledge graph"
+      type: capability
+      capability: resolve_from_knowledge_graph
+      input:
+        resolution_kind: "${input.resolution_kind}"
+        target: "${input.target}"
+        known_values: "${input.known_values}"
+        application_context: "${input.application_context}"
+      output: {target: state.attempt}
+      on_success: {next: route_knowledge_graph}
+      on_failure: {next: web_lookup}
+
+    - id: route_knowledge_graph
+      name: Check knowledge graph result
+      type: condition
+      conditions:
+        - id: kg_found
+          when: "state.attempt.found == True"
+          next: merge_result
+      otherwise: {next: web_lookup}
+
+    - id: web_lookup
+      name: "Second fallback: web search"
+      type: capability
+      capability: resolve_from_web
+      input:
+        resolution_kind: "${input.resolution_kind}"
+        target: "${input.target}"
+        known_values: "${input.known_values}"
+        application_context: "${input.application_context}"
+        files: "${input.files}"
+      output: {target: state.attempt}
+      on_success: {next: route_web}
+      on_failure: {next: llm_resolution}
+
+    - id: route_web
+      name: Check web search result
+      type: condition
+      conditions:
+        - id: web_found
+          when: "state.attempt.found == True"
+          next: merge_result
+      otherwise: {next: llm_resolution}
+
+    - id: llm_resolution
+      name: "Third fallback: LLM inference from available evidence"
+      type: capability
+      capability: resolve_with_llm
+      input:
+        resolution_kind: "${input.resolution_kind}"
+        target: "${input.target}"
+        known_values: "${input.known_values}"
+        application_context: "${input.application_context}"
+        equation: "${input.equation}"
+        prior_evidence: "${state.attempt.evidence}"
+      output: {target: state.attempt}
+      on_success: {next: route_llm}
+      on_failure: {next: ask_user}
+
+    - id: route_llm
+      name: Check LLM result
+      type: condition
+      conditions:
+        - id: llm_found
+          when: "state.attempt.found == True"
+          next: merge_result
+      otherwise: {next: ask_user}
+
+    - id: ask_user
+      name: "Final fallback: ask user for unresolved information"
+      type: human_input
+      prompt:
+        message: >-
+          I could not reliably resolve all requested values for ${input.resolution_kind}.
+          Missing fields: ${input.target}. Please provide a concrete value for each listed field
+          using field=value pairs separated by commas. Do not use placeholders such as unknown,
+          not provided, or N/A; unresolved fields must be resolved before Ashby formulation.
+      output: {target: state.human.response}
+      on_response: {next: merge_user_result}
+
+    - id: merge_user_result
+      name: Normalize user-provided resolution
+      type: capability
+      capability: merge_resolution_result
+      input:
+        current_result: "${state.result}"
+        user_response: "${state.human.response}"
+        resolution_kind: "${input.resolution_kind}"
+        target: "${input.target}"
+      output: {target: state.result}
+      on_success: {next: validate_result}
+      on_failure: {next: fail_resolution}
+
+    - id: merge_result
+      name: Merge source result and provenance
+      type: capability
+      capability: merge_resolution_result
+      input:
+        current_result: "${state.result}"
+        source_result: "${state.attempt}"
+        resolution_kind: "${input.resolution_kind}"
+        target: "${input.target}"
+      output: {target: state.result}
+      on_success: {next: validate_result}
+      on_failure: {next: fail_resolution}
+
+    - id: validate_result
+      name: Validate resolved values and provenance
+      type: capability
+      capability: validate_resolution_result
+      input:
+        result: "${state.result}"
+        resolution_kind: "${input.resolution_kind}"
+        target: "${input.target}"
+      output: {target: state.result}
+      on_success: {next: complete_resolution}
+      on_failure: {next: fail_resolution}
+
+    - id: complete_resolution
+      name: Return resolved values and evidence
+      type: terminal
+      status: COMPLETED
+      output: "${state.result}"
+
+    - id: fail_resolution
+      name: Fail unresolved property resolution
+      type: terminal
+      status: FAILED
+      output:
+        code: PROPERTY_RESOLUTION_FAILED
+        resolution_kind: "${input.resolution_kind}"
+        target: "${input.target}"
+        partial_result: "${state.result}"

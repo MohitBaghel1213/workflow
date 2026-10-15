@@ -57,13 +57,20 @@ class WorkflowEngine:
     def initial_context(
         self, inputs: dict[str, Any], execution_id: str | None = None
     ) -> WorkflowContext:
-        self._validate_inputs(inputs)
+        # Apply schema defaults before validation. Optional inputs such as `files`
+        # must be usable without callers explicitly passing an empty collection.
+        normalized_inputs = deepcopy(inputs)
+        schema = self.workflow.get("input", {}).get("schema", {})
+        for name, spec in schema.get("properties", {}).items():
+            if name not in normalized_inputs and "default" in spec:
+                normalized_inputs[name] = deepcopy(spec["default"])
+        self._validate_inputs(normalized_inputs)
         state = {
             name: deepcopy(spec.get("default"))
             for name, spec in self.workflow.get("state", {}).items()
         }
         return WorkflowContext(
-            inputs=deepcopy(inputs),
+            inputs=normalized_inputs,
             state=state,
             profiles=self.profiles,
             execution_id=execution_id or str(uuid4()),
