@@ -39,10 +39,24 @@ Responsibilities:
 - `CapabilityRegistry`: registers capability IDs and their handlers/metadata.
 - `CapabilityExecutor`: validates required inputs, dispatches handlers, normalizes results. It has no capability-specific `if/else` chain.
 - `CapabilityHandler`: reusable implementation of a capability such as property extraction, validation, or confirmation classification.
-- `ToolManager`: registry/dispatcher for concrete tools used by capabilities (MCP, HTTP, databases, etc.).
+- `AgentCapability`: generic wrapper that reads agent instructions/tool allowlists from YAML and delegates to the shared agent runtime.
+- `ToolCallingAgentRuntime`: owns the reusable model → tool → result → model loop. New agentic capabilities do not implement their own loop.
+- `ToolManager` (`ToolRegistry` alias): registry/dispatcher for concrete tools used by capabilities (MCP, HTTP, databases, etc.).
 - `RuntimeAdapter`: supplies a `model_client` and human-input transport. It does not implement business capabilities.
 - `WorkflowRegistry`: resolves sub-workflow IDs to YAML definitions.
 - Property profile loader: resolves profile composition using `includes` or `extends`.
+
+
+### Agent tool-calling demo
+
+The advanced workflow maps the business capability `find_chemical_alternatives` to the reusable `agent` implementation in YAML. `AgentCapability` delegates to `ToolCallingAgentRuntime`, which owns the only tool-calling loop. Shared services are injected by `CapabilityExecutor`, so callers do not need to manually provide `tool_manager` or a tool-calling model in each execution context.
+
+```bash
+python main.py --workflow advanced --demo
+python -m pytest -q
+```
+
+The mock demo runs without credentials. `MockToolCallingModel` deterministically calls the configured tools in order; it is for architecture demonstrations, not a real LLM planner. The LangChain and Claude adapters currently provide text-completion interfaces; to use real provider-driven tool selection, implement the `ToolCallingModel.next_action(messages, tools)` contract and inject it into `ToolCallingAgentRuntime`.
 
 ## Project structure
 
@@ -66,6 +80,7 @@ framework_independent_declarative_workflow/
 │       ├── executor.py
 │       └── handlers.py
 ├── tools/manager.py
+├── TOOL_CALLING_WALKTHROUGH.md               # End-to-end agent/tool call path
 ├── runtimes/
 │   ├── mock_runtime.py
 │   ├── langchain_runtime.py
@@ -104,6 +119,14 @@ python main.py --workflow advanced
 ```
 
 The advanced profile also requires `pressure` and `viscosity`.
+
+### Complete tool-calling demonstration (no API key)
+
+```powershell
+python main.py --workflow advanced --demo
+```
+
+This executes property extraction and confirmation, then invokes the `find_chemical_alternatives` capability. That capability obtains tool schemas from `ToolManager`, passes them to a deterministic mock tool-calling model, executes requested tools through the registry, feeds tool results back into the model loop, and returns ranked mock candidates plus a tool trace. See `TOOL_CALLING_WALKTHROUGH.md`. The mock model decisions, candidate data, and scores are illustrative only.
 
 ### LangChain runtime
 

@@ -25,11 +25,21 @@ class CapabilityExecutor:
         capability_id: str,
         inputs: dict[str, Any],
         context: ExecutionContext,
+        *,
+        implementation_id: str | None = None,
+        config: dict[str, Any] | None = None,
+        required_inputs: list[str] | None = None,
     ) -> CapabilityResult:
-        handler = self.registry.get(capability_id)
-        metadata = self.registry.metadata(capability_id)
+        # A business capability ID can be mapped declaratively to a reusable
+        # implementation (for example, any YAML-defined agent maps to "agent").
+        handler_id = implementation_id or capability_id
+        handler = self.registry.get(handler_id)
+        metadata = self.registry.metadata(handler_id)
+        if required_inputs is not None:
+            metadata = {**metadata, "required_inputs": required_inputs}
         self._validate_inputs(capability_id, inputs, metadata)
         context.services = {**self.services, **context.services}
+        context.config = {**(config or {}), **context.config}
         result = handler.execute(inputs, context)
         if isinstance(result, CapabilityResult):
             return result

@@ -40,10 +40,23 @@ def build_engine(workflow_name: str = "basic", runtime=None) -> WorkflowEngine:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Composable declarative workflow demo")
     parser.add_argument("--workflow", choices=["basic", "advanced"], default="basic")
+    parser.add_argument("--demo", action="store_true", help="Run a complete no-API-key tool-calling demonstration")
     args = parser.parse_args()
-    engine = build_engine(args.workflow)
+    if args.demo:
+        runtime = MockRuntime(human_input_handler=lambda prompt, context: "yes")
+    else:
+        runtime = MockRuntime()
+    engine = build_engine(args.workflow, runtime=runtime)
     print(f"Running {engine.workflow['name']} with runtime={engine.runtime.runtime_name}")
-    prompt = input("Describe the chemical/product (property_id=value syntax works best): ").strip()
+    if args.demo:
+        prompt = (
+            "chemical_name=ExampleSolvent concentration=10% temperature=25C "
+            "product_type=industrial_cleaner application=surface_cleaning "
+            "pressure=1bar viscosity=low"
+        )
+        print(f"\n[demo] Input: {prompt}")
+    else:
+        prompt = input("Describe the chemical/product (property_id=value syntax works best): ").strip()
     result = engine.run({"user_prompt": prompt})
     print("\nRESULT")
     print(f"status: {result.status}")

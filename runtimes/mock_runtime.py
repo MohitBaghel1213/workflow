@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from workflow_engine.runtime import RuntimeAdapter
+from .mock_tool_calling_model import MockToolCallingModel
 
 
 class MockModelClient:
@@ -65,11 +66,16 @@ class MockRuntime(RuntimeAdapter):
 
     def __init__(self, human_input_handler=None, model_client=None):
         self._model_client = model_client or MockModelClient()
+        self._tool_calling_model = MockToolCallingModel()
         self.human_input_handler = human_input_handler or self._console_input
 
     @property
     def model_client(self):
         return self._model_client
+
+    @property
+    def tool_calling_model(self):
+        return self._tool_calling_model
 
     def request_human_input(self, prompt: str, context: dict[str, Any]) -> str:
         return self.human_input_handler(prompt, context)
@@ -82,3 +88,6 @@ class MockRuntime(RuntimeAdapter):
         print(prompt)
         print("=" * 72)
         return input("Your response: ").strip()
+
+
+

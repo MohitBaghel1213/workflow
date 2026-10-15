@@ -55,7 +55,16 @@ class CapabilityStepHandler(BaseStepHandler):
             config=step.get("config", {}),
         )
         try:
-            result = context.capability_executor.execute(capability_id, inputs, execution_context)
+            capability_section = workflow.get("capabilities", {})
+            capability_definition = (capability_section.get("definitions") or {}).get(capability_id, {})
+            result = context.capability_executor.execute(
+                capability_id,
+                inputs,
+                execution_context,
+                implementation_id=capability_definition.get("implementation"),
+                config=capability_definition.get("config"),
+                required_inputs=capability_definition.get("required_inputs"),
+            )
             if not result.success:
                 wf_context.error = result.error or {
                     "type": "CapabilityExecutionError",

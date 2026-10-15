@@ -19,9 +19,30 @@ workflow:
     execution:
       type: object
       default: {total_steps: 0}
+    chemical_alternative_result:
+      type: object
+      default: {}
   policies:
     execution_limits:
       max_total_steps: 20
+  capabilities:
+    allowed: [find_chemical_alternatives]
+    # Business capability IDs map to reusable implementation IDs. Add another
+    # agent by adding a definition here; no new execute() method is needed.
+    definitions:
+      find_chemical_alternatives:
+        implementation: agent
+        required_inputs: [properties]
+        config:
+          instructions: |
+            Find possible chemical alternatives using the confirmed product requirements.
+            Use the available tools to search for candidates and compare them against the
+            supplied requirements. Do not claim certified equivalence. Clearly identify
+            uncertainty and recommend domain validation before real-world substitution.
+          tools:
+            - chemical_database_search
+            - compare_chemical_candidates
+          max_iterations: 5
   steps:
     - id: collect_properties
       name: Collect and Confirm Properties
@@ -33,15 +54,28 @@ workflow:
       output:
         target: state.property_collection_result
       on_success:
+        next: find_chemical_alternatives
+      on_failure:
+        next: handle_failure
+    - id: find_chemical_alternatives
+      name: Find Chemical Alternatives Using Agent Tool Calling
+      type: capability
+      capability: find_chemical_alternatives
+      input:
+        properties: "${state.property_collection_result.properties}"
+      output:
+        target: state.chemical_alternative_result
+      on_success:
         next: complete_workflow
       on_failure:
         next: handle_failure
     - id: complete_workflow
-      name: Return Collected Properties
+      name: Return Properties and Chemical Alternatives
       type: terminal
       status: COMPLETED
       output:
         result: "${state.property_collection_result}"
+        alternatives: "${state.chemical_alternative_result}"
     - id: handle_failure
       name: Handle Child Workflow Failure
       type: terminal
